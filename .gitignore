@@ -1,0 +1,31 @@
+# Local dependency folders
+.model_deps/
+.scipy_pkg/
+.vendor_xgb/
+.wheelhouse/
+.xgb_pkg/
+node_modules/
+
+# Generated analysis outputs
+outputs/
+
+# Raw/private data files
+*.xlsx
+*.xls
+*.csv
+*.tsv
+*.pdf
+
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+

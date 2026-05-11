@@ -1,0 +1,7 @@
+pandas
+numpy
+openpyxl
+pypdf
+pillow
+xgboost
+scipy
