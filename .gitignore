@@ -9,13 +9,6 @@ node_modules/
 # Generated analysis outputs
 outputs/
 
-# Raw/private data files
-*.xlsx
-*.xls
-*.csv
-*.tsv
-*.pdf
-
 # Python cache and virtual environments
 __pycache__/
 *.py[cod]
@@ -28,4 +21,3 @@ env/
 Thumbs.db
 .vscode/
 .idea/
-
