@@ -13,6 +13,7 @@ OUT = ROOT / "outputs" / "deg_nn_dataset"
 OUT.mkdir(parents=True, exist_ok=True)
 
 PROCESS_FILE = ROOT / "ZCP14.xlsx"
+HISTORY_PROCESS_FILE = ROOT / "ZCP14历史数据.xlsx"
 LAB_FILE = ROOT / "DEGResult.xlsx"
 
 PROCESS_COLUMNS = [
@@ -85,19 +86,35 @@ def df_records(df: pd.DataFrame):
     ]
 
 
+def classify_period_phase(t: pd.Timestamp) -> tuple[str, str]:
+    if pd.Timestamp("2026-01-29 00:00:00") <= t <= pd.Timestamp("2026-02-28 23:55:00"):
+        return "1.29-2.28 稳定", "stable"
+    if pd.Timestamp("2026-03-21 00:00:00") <= t <= pd.Timestamp("2026-04-20 23:55:00"):
+        return "3.21-4.20 减产", "reduced_rate"
+    return "ZCP14历史数据", "historical"
+
+
 def load_process_data() -> pd.DataFrame:
     frames = []
-    xls = pd.ExcelFile(PROCESS_FILE)
-    for sheet in xls.sheet_names:
-        df = pd.read_excel(PROCESS_FILE, sheet_name=sheet, header=[0, 1])
-        df.columns = PROCESS_COLUMNS
-        df["process_time"] = pd.to_datetime(df["process_time"], errors="coerce")
-        for col in PROCESS_COLUMNS[1:]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        phase = "reduced_rate" if "减产" in sheet else "stable"
-        df["process_period"] = sheet
-        df["phase"] = phase
-        frames.append(df.dropna(subset=["process_time"]))
+    source_files = [HISTORY_PROCESS_FILE] if HISTORY_PROCESS_FILE.exists() else [PROCESS_FILE]
+    for source_file in source_files:
+        xls = pd.ExcelFile(source_file)
+        for sheet in xls.sheet_names:
+            df = pd.read_excel(source_file, sheet_name=sheet, header=[0, 1])
+            if df.shape[1] < len(PROCESS_COLUMNS):
+                raise ValueError(f"{source_file.name}/{sheet} has {df.shape[1]} columns; expected at least {len(PROCESS_COLUMNS)}")
+            # Keep the common 17 process columns. ZCP14历史数据.xlsx has an extra VI18020 column,
+            # which is intentionally excluded so the feature definition stays consistent.
+            df = df.iloc[:, : len(PROCESS_COLUMNS)].copy()
+            df.columns = PROCESS_COLUMNS
+            df["process_time"] = pd.to_datetime(df["process_time"], errors="coerce")
+            for col in PROCESS_COLUMNS[1:]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            classified = df["process_time"].apply(lambda t: classify_period_phase(t) if pd.notna(t) else (None, None))
+            df["process_period"] = [item[0] for item in classified]
+            df["phase"] = [item[1] for item in classified]
+            frames.append(df.dropna(subset=["process_time"]))
+
     process = pd.concat(frames, ignore_index=True).sort_values("process_time")
     process = process.drop_duplicates(subset=["process_time"], keep="last")
     return process.reset_index(drop=True)
@@ -151,7 +168,7 @@ def process_period_for_time(t: pd.Timestamp, ranges):
     return None, None
 
 
-def nearest_values(process: pd.DataFrame, t: pd.Timestamp, variables, tolerance_min=3):
+def nearest_row(process: pd.DataFrame, t: pd.Timestamp, tolerance_min=3):
     idx = pd.Index(process["process_time"]).get_indexer([t], method="nearest")[0]
     if idx < 0:
         return None, None
@@ -159,7 +176,7 @@ def nearest_values(process: pd.DataFrame, t: pd.Timestamp, variables, tolerance_
     gap = abs((row["process_time"] - t).total_seconds()) / 60
     if gap > tolerance_min:
         return None, gap
-    return row[variables], gap
+    return row, gap
 
 
 def build_wide_and_sequence(process: pd.DataFrame, lab: pd.DataFrame):
@@ -183,9 +200,11 @@ def build_wide_and_sequence(process: pd.DataFrame, lab: pd.DataFrame):
 
     for source_idx, lab_row in lab.iterrows():
         sample_time = lab_row["sample_time"]
-        period, phase = process_period_for_time(sample_time, ranges)
-        if period is None:
+        current_row, nearest_gap = nearest_row(process, sample_time)
+        if current_row is None:
             continue
+        period = current_row["process_period"]
+        phase = current_row["phase"]
 
         sample_id = f"ZCP14_{sample_time.strftime('%Y%m%d_%H%M')}"
         base = {
@@ -205,16 +224,13 @@ def build_wide_and_sequence(process: pd.DataFrame, lab: pd.DataFrame):
             "aux_tio2_pct": lab_row["aux_tio2_pct"],
         }
 
-        current_vals, nearest_gap = nearest_values(process, sample_time, variables)
-        if current_vals is None:
-            continue
         base["nearest_process_gap_min"] = nearest_gap
         for var in variables:
-            base[f"now_{var}"] = current_vals[var]
+            base[f"now_{var}"] = current_row[var]
 
         for lag_h in LAG_HOURS:
             target_time = sample_time - pd.Timedelta(hours=lag_h)
-            lag_vals, lag_gap = nearest_values(process, target_time, variables, tolerance_min=3)
+            lag_vals, lag_gap = nearest_row(process, target_time, tolerance_min=3)
             base[f"lag_{lag_h}h_gap_min"] = lag_gap
             for var in variables:
                 base[f"lag_{lag_h}h_{var}"] = lag_vals[var] if lag_vals is not None else np.nan
@@ -382,7 +398,7 @@ def build_metadata(wide: pd.DataFrame, sequence: pd.DataFrame, excluded: pd.Data
             {"item": "序列特征", "detail": "Sequence_8h_Full 是每个样本取样前 8 小时、5 分钟间隔的长表，适合 LSTM/GRU/TCN；按 sample_id 分组。"},
             {"item": "划分建议", "detail": "split_chrono 是按时间顺序 70%/15%/15% 的训练/验证/测试提示，可按实际建模方案调整。"},
             {"item": "标准化", "detail": "Normalization_Params 使用训练集统计量计算，建模时建议按这些均值和标准差缩放输入特征。"},
-            {"item": "样本提醒", "detail": "当前两段过程数据只覆盖 64 条有效 DEG 样本，神经网络容易过拟合，建议先做小模型或增加更多历史批次。"},
+            {"item": "样本提醒", "detail": f"当前过程数据覆盖 {len(wide)} 条有效 DEG 样本；样本量较之前增加，但训练神经网络仍建议继续积累更多历史批次。"},
         ]
     )
 

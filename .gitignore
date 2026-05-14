@@ -7,7 +7,11 @@
 node_modules/
 
 # Generated analysis outputs
-outputs/
+outputs/*
+!outputs/deg_nn_dataset/
+outputs/deg_nn_dataset/*
+!outputs/deg_nn_dataset/DEG_NN_Dataset.xlsx
+!outputs/deg_nn_dataset/deg_dataset_payload.json
 
 # Python cache and virtual environments
 __pycache__/
